@@ -46,7 +46,7 @@ gesture_options = GestureRecognizerOptions(
 
 """
 console_quit_requested() uses select() to check if there's input waiting on stdin without 
-blocking the video loop. If a line equal to q (or EOF, e.g. Ctrl-D) is found, it returns 
+blocking the video loop. If a line equal to q (or EOF, e.g. Ctrl-C) is found, it returns 
 True and the loop breaks.
 """
 def console_quit_requested():

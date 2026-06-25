@@ -10,12 +10,14 @@ GESTURE_TO_COMMAND = {
     "ILoveYou": "<L>",
 }
 
-MIN_CONFIDENCE_SCORE = 0.65
+MIN_CONFIDENCE_SCORE = 0.5
+BAUD_RATE = 115200
 
 last_command_sent = None
 
 def send_command(gesture_name, confidence_score):
     global last_command_sent
+    
     if confidence_score < MIN_CONFIDENCE_SCORE:
         print(f"Gesture '{gesture_name}' confidence {confidence_score:.2f} below threshold. Not sending command.")
         return
@@ -31,7 +33,8 @@ def send_command(gesture_name, confidence_score):
 
     try:
         print("Attempting to send command: ", command)
-        # with serial.Serial('COM3', 9600, timeout=1) as ser:
+        last_command_sent = command
+        # with serial.Serial('COM3', BAUD_RATE, timeout=1) as ser:
         #     time.sleep(2)  # Wait for the serial connection to initialize
         #     ser.write(command.encode())
         #     print(f"Sent command: {command}")
