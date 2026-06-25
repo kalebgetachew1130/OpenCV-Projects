@@ -3,3 +3,5 @@
 /task
 __pycache__/
 *.pyc
+.vscode/
+.micropico/
