@@ -7,10 +7,10 @@ import check_tapped as ctap
 actions = {
     "<O>": cacc.print_acceleration,
     "<C>": cang.print_angle,
-    "<U>": lambda: print("thumb up action"),
-    "<D>": lambda: print("thumb down action"),
-    "<P>": cshk.print_shake,
-    "<L>": ctap.print_tapped,
+    "<U>": cshk.print_shake,
+    "<D>": ctap.print_tapped,
+    "<P>": cang.print_tilt_direction, #check if we are facing up or down, i.e., negative angle (angle)
+    "<L>": cacc.print_acceleration_magnitude, #check magnitude of acceleration (acceleration)
 }
 
 def handle_command(cmd):

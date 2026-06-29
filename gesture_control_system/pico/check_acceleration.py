@@ -10,3 +10,11 @@ def print_acceleration():
 
     print(x, y, z)
     return x, y, z
+
+def print_acceleration_magnitude():
+    x, y, z = motion.acceleration
+    magnitude = (x**2 + y**2 + z**2) ** 0.5
+    magnitude = round(magnitude, 2)
+
+    print("Acceleration Magnitude: {:.2f}".format(magnitude))
+    return magnitude

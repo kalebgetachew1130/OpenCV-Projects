@@ -3,7 +3,7 @@ import sys
 import time
 import select
 import mediapipe as mp
-from pc.serial_sender import send_command
+from pc.serial_sender import send_command, shutdown
 from mediapipe.tasks.python import vision
 from pprint import pprint
 
@@ -176,5 +176,6 @@ with GestureRecognizer.create_from_options(gesture_options) as recognizer:
             if window_quit_requested or console_quit_requested():
                 break
     finally:
+        shutdown()  # flush any queued command and stop the serial worker thread
         capturer.release()
         cv2.destroyAllWindows()
