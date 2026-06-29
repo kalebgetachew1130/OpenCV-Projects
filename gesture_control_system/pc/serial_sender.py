@@ -23,6 +23,11 @@ _command_queue = queue.Queue()
 
 # Only ever read/written from the main thread, so no lock needed.
 _last_command_sent = None
+_last_send_time = 0.0
+
+# While a gesture is held, re-send it this often (seconds) so holding produces
+# steady output without flooding the Pico on every frame.
+REPEAT_INTERVAL = 0.5
 
 
 def _serial_worker():
@@ -31,7 +36,21 @@ def _serial_worker():
     The port is opened once (lazily, on the first command) so the one-time 2s
     Pico-reset wait happens here, off the main thread — the UI never freezes.
     """
-    ser = None
+    def _open_port():
+        # Open the port and wait for the Pico to reset. Done off the main thread,
+        # so the UI never freezes regardless of when this runs.
+        s = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+        time.sleep(2)  # wait for the Pico to reset after the port opens
+        return s
+
+    # Open at startup so the 2s reset wait overlaps with the rest of the
+    # program coming up — the first real command then sends without that delay.
+    try:
+        ser = _open_port()
+    except serial.SerialException as e:
+        print(f"Error opening serial port: {e}")
+        ser = None  # retry on the first command
+
     while True:
         command = _command_queue.get()  # blocks until a command is queued
         if command is None:  # sentinel: shut the worker down
@@ -39,8 +58,7 @@ def _serial_worker():
             break
         try:
             if ser is None:
-                ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-                time.sleep(2)  # one-time wait for the Pico to reset after the port opens
+                ser = _open_port()  # reconnect after an earlier failure
             # Terminate with '\n' — the Pico reads with sys.stdin.readline(),
             # which blocks until it receives a newline.
             ser.write((command + "\n").encode())
@@ -65,7 +83,7 @@ _worker_thread.start()
 def send_command(gesture_name, confidence_score):
     """Queue a command for the background worker. Non-blocking — safe to call
     from the video loop every frame."""
-    global _last_command_sent
+    global _last_command_sent, _last_send_time
 
     if confidence_score < MIN_CONFIDENCE_SCORE:
         return
@@ -75,11 +93,14 @@ def send_command(gesture_name, confidence_score):
         print(f"No command mapped for gesture '{gesture_name}'.")
         return
 
-    # The main loop fires every frame; only queue when the gesture changes so we
-    # don't flood the queue (and the Pico) with the same command repeatedly.
-    if command == _last_command_sent:
+    # The main loop fires every frame. Send on gesture change, OR re-send a held
+    # gesture every REPEAT_INTERVAL so holding produces steady output without
+    # flooding the queue (and the Pico) with the same command on every frame.
+    now = time.monotonic()
+    if command == _last_command_sent and (now - _last_send_time) < REPEAT_INTERVAL:
         return
     _last_command_sent = command
+    _last_send_time = now
 
     _command_queue.put(command)
 
