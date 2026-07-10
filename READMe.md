@@ -1,137 +1,130 @@
-GESTURE CONTROL SYSTEM – 1 PAGE ARCHITECTURE SPEC
+# Gesture Control System
 
-==================================================
-SYSTEM OVERVIEW
-==================================================
-Camera-based gesture control system that converts real-time hand motion into structured commands sent to a Raspberry Pi Pico, which executes actions and returns sensor feedback (accelerometer data). System is closed-loop and latency-sensitive.
+## System Overview
 
-==================================================
-HIGH-LEVEL PIPELINE (Goal)
-==================================================
+Camera-based gesture control system that converts real-time hand motion into structured commands sent to a Raspberry Pi Pico, which executes actions and returns sensor feedback (accelerometer data). The system is closed-loop and latency-sensitive.
 
-[Camera Input]
-    ↓
-[OpenCV Frame Capture]
-    ↓
-[MediaPipe Hand Landmark Tracking]
-    ↓
-[Gesture Classification Layer]
-    - rule-based or ML mapping from landmarks → gesture label + confidence
-    ↓
-[Gesture Processing Layer (PC)]
-    - smoothing (frame buffer / majority vote)
-    - debounce (N-frame confirmation)
-    - confidence filtering
-    - state machine (IDLE / CONTROL / LOCKED)
-    ↓
-[Command Encoder]
-    - structured message creation (JSON or packet format)
-    - attach cmd_id + timestamp + confidence
-    ↓
-[Serial Communication Layer]
-    - non-blocking USB serial
-    - send command to Pico
-    ↓
-[Raspberry Pi Pico Firmware]
-    - parse commands
-    - execute actuator logic
-    - read accelerometer (IMU)
-    ↓
-[Feedback Channel]
-    - Pico sends sensor data back to PC
-    - optional ACK + telemetry stream
-    ↓
-[PC Logging / Visualization]
-    - overlay UI (gesture, FPS, confidence)
-    - serial logs
-    - latency measurement
+## High-Level Pipeline
 
-==================================================
-SOFTWARE COMPONENTS
-==================================================
+```text
+Camera Input
+    ↓
+OpenCV Frame Capture
+    ↓
+MediaPipe Hand Landmark Tracking
+    ↓
+Gesture Classification
+    └─ Rule-based or ML mapping from landmarks → gesture label + confidence
+    ↓
+Gesture Processing (PC)
+    ├─ Smoothing (frame buffer / majority vote)
+    ├─ Debounce (N-frame confirmation)
+    ├─ Confidence filtering
+    └─ State machine (IDLE / CONTROL / LOCKED)
+    ↓
+Command Encoder
+    ├─ Structured message creation (JSON or packet format)
+    └─ Attach cmd_id, timestamp, and confidence
+    ↓
+Serial Communication Layer
+    ├─ Non-blocking USB serial
+    └─ Send command to Pico
+    ↓
+Raspberry Pi Pico Firmware
+    ├─ Parse commands
+    ├─ Execute actuator logic
+    └─ Read accelerometer (IMU)
+    ↓
+Feedback Channel
+    ├─ Pico sends sensor data back to the PC
+    └─ Optional ACK and telemetry stream
+    ↓
+PC Logging & Visualization
+    ├─ Overlay UI (gesture, FPS, confidence)
+    ├─ Serial logs
+    └─ Latency measurement
+```
 
-1. OpenCV (Video System)
-- webcam capture
-- frame timing control
-- debug rendering (FPS, overlays)
-- latency measurement hooks
+## Software Components
 
-2. MediaPipe (Perception Layer)
-- hand landmark extraction
-- gesture feature input
+### OpenCV (Video System)
+- Webcam capture
+- Frame timing control
+- Debug rendering (FPS, overlays)
+- Latency measurement hooks
 
-3. Gesture Logic Layer (YOUR CODE)
-- smoothing: moving average / exponential smoothing
-- debounce: require stable gesture over N frames
-- confidence filtering
-- state machine control
+### MediaPipe (Perception Layer)
+- Hand landmark extraction
+- Gesture feature generation
 
-4. Serial Protocol Layer
-- structured messages:
-  {"cmd": "...", "id": n, "conf": x}
+### Gesture Logic Layer
+- Temporal smoothing (moving average or exponential smoothing)
+- Debounce requiring a stable gesture over *N* frames
+- Confidence filtering
+- State-machine control
+
+### Serial Protocol Layer
+- Structured messages such as `{"cmd":"...","id":n,"conf":x}`
 - ACK support (recommended)
-- retry handling (optional)
+- Optional retry handling
 
-5. Pico Firmware
-- command parser
-- actuator control
-- accelerometer readout
-- feedback transmission
+### Pico Firmware
+- Command parsing
+- Actuator control
+- Accelerometer readout
+- Feedback transmission
 
-==================================================
-KEY DESIGN FEATURES
-==================================================
+## Key Design Features
 
-- Real-time processing pipeline (low latency <100ms target)
+- Real-time processing pipeline with a target latency below 100 ms
 - Closed-loop feedback system (command ↔ sensor response)
-- Noise-resistant gesture recognition via temporal smoothing
-- State-based control system to prevent accidental triggers
-- Structured communication protocol instead of raw strings
+- Noise-resistant gesture recognition through temporal smoothing
+- State-based control to prevent accidental triggers
+- Structured communication protocol rather than raw strings
 
-==================================================
-OPEN-CV CAPABILITIES USED
-==================================================
+## OpenCV Capabilities Used
 
-- real-time video capture
-- frame-by-frame inference pipeline
-- gesture overlay visualization
-- landmark tracking display
-- temporal buffering (smoothing input signals)
-- debounce logic (frame consistency enforcement)
-- motion jitter reduction (coordinate smoothing)
-- FPS + latency measurement tools
+- Real-time video capture
+- Frame-by-frame inference pipeline
+- Gesture overlay visualization
+- Landmark tracking display
+- Temporal buffering for smoothing
+- Debounce logic for frame consistency
+- Motion-jitter reduction via coordinate smoothing
+- FPS and latency measurement
 
-==================================================
-HARDWARE OPTIONS FOR TESTING
-==================================================
+## Hardware Options for Testing
 
-PHASE 1 (LOGIC VALIDATION)
-- LED strip (NeoPixels) → visual state output
+### Phase 1 — Logic Validation
+- NeoPixel LED strip for visual state output
 
-PHASE 2 (SIMPLE MOTION)
-- SG90 servo motor → gesture-to-angle mapping
+### Phase 2 — Simple Motion
+- SG90 servo motor for gesture-to-angle mapping
 
-PHASE 3 (SPATIAL CONTROL)
-- Pan-tilt servo mount → 2-axis gesture control
+### Phase 3 — Spatial Control
+- Pan-tilt servo mount for two-axis gesture control
 
-PHASE 4 (MECHATRONICS)
-- DC motor + L298N driver → continuous motion control
+### Phase 4 — Mechatronics
+- DC motor with an L298N driver for continuous motion control
 
-PHASE 5 (FULL SYSTEM TEST)
-- Robot car kit → gesture-driven navigation system
+### Phase 5 — Full System Test
+- Robot car kit for gesture-driven navigation
 
-OPTIONAL ADVANCED INPUT
-- Leap Motion Controller → high precision hand tracking
+### Optional Advanced Input
+- Leap Motion Controller for high-precision hand tracking
 
-==================================================
-END STATE GOAL
-==================================================
+## End-State Goal
 
-A stable gesture-controlled robotics interface where:
-- hand motion → deterministic commands
-- system is noise-resistant and state-driven
-- latency is predictable and low
-- hardware responds smoothly and reliably
+A stable gesture-controlled robotics interface in which:
 
-- To run this program, cd into the gesture_control_system directory and run the following command: 
+- Hand motion maps to deterministic commands
+- The system is noise-resistant and state-driven
+- Latency is predictable and low
+- Hardware responds smoothly and reliably
+
+## Running the Program
+
+```bash
+cd gesture_control_system
 python3.12 -m tracker_templates.gesture_tracker
+```
