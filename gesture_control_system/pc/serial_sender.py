@@ -24,73 +24,176 @@ _command_queue = queue.Queue()
 # Only ever read/written from the main thread, so no lock needed.
 _last_command_sent = None
 _last_send_time = 0.0
+_last_warning_time = 0.0  # Track the last time a warning was printed
 
 # While a gesture is held, re-send it this often (seconds) so holding produces
 # steady output without flooding the Pico on every frame.
-REPEAT_INTERVAL = 0.5
+REPEAT_INTERVAL = 0.33
+
+# ACK (acknowledgement) protocol — telemetry only.
+# The Pico replies with one of these lines once it has handled a command:
+#   ACK:<cmd>   command received and its action ran successfully
+#   NAK:<cmd>   command was rejected (unknown) or its action raised
+# Sends are fire-and-forget: the writer never waits for these. A dedicated
+# reader thread drains the replies and logs them, so a slow or lost ACK can
+# never stall fresh gestures. This suits real-time control as a dropped command
+# self-heals, because a held gesture re-sends every REPEAT_INTERVAL anyway.
+ACK_PREFIX = "ACK:"
+NAK_PREFIX = "NAK:"
+
+# Shared serial port. The writer thread owns opening/reconnecting; the reader
+# thread only reads. `_serial_lock` guards (re)assignment and open/close of
+# `_ser` so the two threads never race on the handle itself as the actual
+# read()/write() calls happen outside the lock (pyserial permits one concurrent
+# reader and one writer on the same port).
+_serial_lock = threading.Lock()
+_ser = None
+_shutdown = threading.Event()
 
 
-def _serial_worker():
-    """Runs on a background thread and owns the serial port for the whole session.
+def _open_port(): # only called from the writer thread, under the lock
+    """Open the port and wait for the Pico to reset. Done off the main thread,
+    so the UI never freezes regardless of when this runs. The short read timeout
+    keeps the reader thread responsive to shutdown and reconnects."""
+    s = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.5)
+    time.sleep(2)  # wait for the Pico to reset after the port opens
+    return s
 
-    The port is opened once (lazily, on the first command) so the one-time 2s
-    Pico-reset wait happens here, off the main thread — the UI never freezes.
+
+def _ensure_open(): # only called from the writer thread
+    """Return an open port, opening it under the lock if needed. Raises
+    serial.SerialException if the open fails."""
+    global _ser
+    with _serial_lock:
+        if _ser is None:
+            _ser = _open_port()
+        return _ser
+
+
+def _drop_port(): # only called from the writer thread
+    """Close and clear the shared port so the writer reopens it next command."""
+    global _ser
+    with _serial_lock:
+        if _ser is not None:
+            _ser.close()
+        _ser = None
+
+
+def _coalesce_latest(first):
+    """Drain everything already queued behind `first` and return a
+    ``(command, shutdown)`` pair.
+
+    Holding a gesture enqueues the same command every REPEAT_INTERVAL. If the
+    writer briefly falls behind (e.g. a reconnect) those pile up, so before
+    sending we collapse the backlog to the newest command (latest gesture wins)
+    — this bounds queue growth. A shutdown sentinel (None) anywhere in the
+    backlog wins outright.
     """
-    def _open_port():
-        # Open the port and wait for the Pico to reset. Done off the main thread,
-        # so the UI never freezes regardless of when this runs.
-        s = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-        time.sleep(2)  # wait for the Pico to reset after the port opens
-        return s
+    command = first
+    shutdown = command is None
+    while True:
+        try:
+            nxt = _command_queue.get_nowait() # non-blocking snatching of the next item in the queue
+        except queue.Empty: # since there are no items in our queue, there is nothing to coalesce, so we break out of the loop
+            break
+        _command_queue.task_done() # the consumer thread is now finished with the item, so we mark it as done
+        if nxt is None:
+            shutdown = True # shutdown sentinel precedence
+        else:
+            command = nxt
+    
+    return (None, True) if shutdown else (command, False)
 
+
+def _serial_reader():
+    """Background reader: continuously drains the Pico's replies and logs
+    ACK/NAK. Sends are fire-and-forget, so the ACK is pure telemetry here; this
+    thread never blocks the writer. A NAK (command rejected) is surfaced as a
+    warning; plain sensor debug lines from the Pico are ignored. Draining also
+    keeps the OS input buffer from filling up with the Pico's chatter.
+    """
+    while not _shutdown.is_set():
+        with _serial_lock:
+            ser = _ser
+        if ser is None:
+            time.sleep(0.1)  # writer hasn't opened the port yet
+            continue
+        try:
+            line = ser.readline().decode(errors="replace").strip()
+        except serial.SerialException:
+            time.sleep(0.1)  # port died; the writer will reopen it
+            continue
+        if not line: # line is empty, which means a read timeout occurred
+            continue  # read timeout — loop so we notice shutdown/reconnect
+        time_stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()) 
+        if line.startswith(ACK_PREFIX):
+            print(f"ACK '{line[len(ACK_PREFIX):]}'; Time: {time_stamp}")
+        elif line.startswith(NAK_PREFIX):
+            print(
+                f"NAK '{line[len(NAK_PREFIX):]}' rejected by Pico; "
+                f"Time: {time_stamp}"
+            )
+        # Anything else is sensor debug output; ignore it.
+
+
+def _serial_writer():
+    """Owns the serial port and writes commands. Never blocks on the ACK
+    replies are handled asynchronously by _serial_reader, so a slow or lost ACK
+    can't stall fresh gestures. The port is opened once (lazily, on startup) so
+    the one-time 2s Pico-reset wait happens off the main thread.
+    """
     # Open at startup so the 2s reset wait overlaps with the rest of the
-    # program coming up — the first real command then sends without that delay.
+    # program coming up. The first real command then sends without that delay.
     try:
-        ser = _open_port()
+        _ensure_open()
     except serial.SerialException as e:
-        print(f"Error opening serial port: {e}")
-        ser = None  # retry on the first command
+        print(f"Error opening serial port: {e}")  # retry on the first command
 
     while True:
-        command = _command_queue.get()  # blocks until a command is queued
-        if command is None:  # sentinel: shut the worker down
-            _command_queue.task_done()
+        first = _command_queue.get()  # blocks until a command is queued
+        command, shutdown = _coalesce_latest(first)
+        _command_queue.task_done()  # accounts for `first`
+        if shutdown:  # sentinel: shut the worker down
             break
         try:
-            if ser is None:
-                ser = _open_port()  # reconnect after an earlier failure
+            ser = _ensure_open()  # (re)connect if the port isn't open
             # Terminate with '\n' — the Pico reads with sys.stdin.readline(),
             # which blocks until it receives a newline.
             ser.write((command + "\n").encode())
-            print(f"Sent command: {command}")
         except serial.SerialException as e:
             print(f"Error sending command '{command}': {e}")
-            if ser is not None:
-                ser.close()
-            ser = None  # force a reconnect attempt on the next command
-        finally:
-            _command_queue.task_done()
+            _drop_port()  # force a reconnect attempt on the next command
 
-    if ser is not None:
-        ser.close()
+    _shutdown.set()  # stop the reader thread
+    _drop_port() # clean up the port on shutdown
 
+# All this module does is start the background threads and provide a simple send_command() API. 
+# The main loop can call send_command() every frame without blocking on I/O, and the background 
+# threads handle the serial port and ACK/NAK telemetry asynchronously.
 
-# Start the worker once on import. daemon=True so it dies with the main program.
-_worker_thread = threading.Thread(target=_serial_worker, daemon=True)
+# Start both threads once on import. daemon=True so they die with the main
+# program even if shutdown() is never called.
+_worker_thread = threading.Thread(target=_serial_writer, daemon=True)
 _worker_thread.start()
+_reader_thread = threading.Thread(target=_serial_reader, daemon=True)
+_reader_thread.start()
 
 
 def send_command(gesture_name, confidence_score):
     """Queue a command for the background worker. Non-blocking — safe to call
     from the video loop every frame."""
-    global _last_command_sent, _last_send_time
+    global _last_command_sent, _last_send_time, _last_warning_time
 
     if confidence_score < MIN_CONFIDENCE_SCORE:
         return
 
+    now = time.monotonic()
     command = GESTURE_TO_COMMAND.get(gesture_name)
     if command is None:
-        print(f"No command mapped for gesture '{gesture_name}'.")
+        # 1 sec buffer
+        if (now - _last_warning_time) > 1.0:
+            print(f"No command mapped for gesture '{gesture_name}'.")
+            _last_warning_time = now
         return
 
     # The main loop fires every frame. Send on gesture change, OR re-send a held
@@ -109,3 +212,5 @@ def shutdown():
     """Optional: flush and stop the worker cleanly (e.g. in your loop's finally)."""
     _command_queue.put(None)
     _worker_thread.join(timeout=5)
+    _shutdown.set()
+    _reader_thread.join(timeout=2)

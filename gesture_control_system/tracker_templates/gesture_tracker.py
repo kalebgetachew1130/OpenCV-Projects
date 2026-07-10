@@ -46,7 +46,7 @@ gesture_options = GestureRecognizerOptions(
 
 """
 console_quit_requested() uses select() to check if there's input waiting on stdin without 
-blocking the video loop. If a line equal to q (or EOF, e.g. Ctrl-C) is found, it returns 
+blocking the video loop. If a line equal to q (or EOF [End of Life], e.g. Ctrl-C [Force Quit]) is found, it returns 
 True and the loop breaks.
 """
 def console_quit_requested():
@@ -157,8 +157,8 @@ with GestureRecognizer.create_from_options(gesture_options) as recognizer:
                         # Send command for the top gesture
                         send_command(top_gesture, hand_gesture_list[0].score)  
                         
-                        # Display the hand side and top gesture on the video feed
-                        display_text = f"{hand_side}: {top_gesture}"
+                        # Display the hand side and top gesture with confidence score on the video feed
+                        display_text = f"{hand_side}: {top_gesture} with confidence {hand_gesture_list[0].score:.2f}"
 
                         y_position = 70 + (i * 40) 
                         
