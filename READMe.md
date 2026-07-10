@@ -4,7 +4,7 @@
 
 Camera-based gesture control system that converts real-time hand motion into structured commands sent to a Raspberry Pi Pico, which executes actions and returns sensor feedback (accelerometer data). The system is closed-loop and latency-sensitive.
 
-## High-Level Pipeline
+## High-Level Pipeline (Goal)
 
 ```text
 Camera Input
