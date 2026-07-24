@@ -2,6 +2,7 @@ import serial
 import time
 import queue
 import threading
+import uuid
 
 GESTURE_TO_COMMAND = {
     "Open_Palm": "<O>",
@@ -31,15 +32,32 @@ _last_warning_time = 0.0  # Track the last time a warning was printed
 REPEAT_INTERVAL = 0.33
 
 # ACK (acknowledgement) protocol — telemetry only.
-# The Pico replies with one of these lines once it has handled a command:
-#   ACK:<cmd>   command received and its action ran successfully
-#   NAK:<cmd>   command was rejected (unknown) or its action raised
+# Every command is sent as a 3-line payload (command, command_id, send
+# timestamp). The Pico echoes the command_id and timestamp back in its reply so
+# the PC can correlate each ACK/NAK with the exact command it sent:
+#   ACK:<cmd>|<command_id>|<timestamp>   handled successfully
+#   NAK:<cmd>|<command_id>|<timestamp>   rejected (unknown) or the action raised
 # Sends are fire-and-forget: the writer never waits for these. A dedicated
 # reader thread drains the replies and logs them, so a slow or lost ACK can
 # never stall fresh gestures. This suits real-time control as a dropped command
 # self-heals, because a held gesture re-sends every REPEAT_INTERVAL anyway.
 ACK_PREFIX = "ACK:"
 NAK_PREFIX = "NAK:"
+# Field separator inside an ACK/NAK line. Chosen so it can't collide with any
+# field: commands are "<X>", command_ids are UUIDv4s, and the timestamp only
+# uses digits, '-', ' ' and ':'.
+FIELD_SEP = "|"
+
+
+def _parse_ack(line, prefix):
+    """Split an ACK/NAK line into ``(cmd, command_id, timestamp)``.
+
+    Missing trailing fields come back as empty strings so a truncated or
+    older-format reply still logs cleanly instead of raising.
+    """
+    parts = line[len(prefix):].split(FIELD_SEP, 2)
+    parts += [""] * (3 - len(parts))
+    return parts[0], parts[1], parts[2]
 
 # Shared serial port. The writer thread owns opening/reconnecting; the reader
 # thread only reads. `_serial_lock` guards (re)assignment and open/close of
@@ -125,13 +143,17 @@ def _serial_reader():
             continue
         if not line: # line is empty, which means a read timeout occurred
             continue  # read timeout — loop so we notice shutdown/reconnect
-        time_stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()) 
+        recv_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
         if line.startswith(ACK_PREFIX):
-            print(f"ACK '{line[len(ACK_PREFIX):]}'; Time: {time_stamp}")
-        elif line.startswith(NAK_PREFIX):
+            cmd, command_id, sent_time = _parse_ack(line, ACK_PREFIX)
             print(
-                f"NAK '{line[len(NAK_PREFIX):]}' rejected by Pico; "
-                f"Time: {time_stamp}"
+                f"ACK '{cmd}' id={command_id}; sent={sent_time}; recv={recv_time}"
+            )
+        elif line.startswith(NAK_PREFIX):
+            cmd, command_id, sent_time = _parse_ack(line, NAK_PREFIX)
+            print(
+                f"NAK '{cmd}' rejected by Pico; id={command_id}; "
+                f"sent={sent_time}; recv={recv_time}"
             )
         # Anything else is sensor debug output; ignore it.
 
@@ -157,9 +179,18 @@ def _serial_writer():
             break
         try:
             ser = _ensure_open()  # (re)connect if the port isn't open
-            # Terminate with '\n' — the Pico reads with sys.stdin.readline(),
-            # which blocks until it receives a newline.
-            ser.write((command + "\n").encode())
+            # Send the command as a 3-line payload: command, command_id, send
+            # timestamp — one field per line. Each line ends with '\n' because
+            # the Pico reads with sys.stdin.readline(), which blocks until it
+            # receives a newline. The Pico echoes the command_id and timestamp
+            # back in its ACK/NAK so the reader can correlate the reply.
+            command_uuid = str(uuid.uuid4())  # standard UUIDv4 command_id
+            command_send_time_stamp = time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime()
+            )
+            ser.write(
+                f"{command}\n{command_uuid}\n{command_send_time_stamp}\n".encode()
+            )
         except serial.SerialException as e:
             print(f"Error sending command '{command}': {e}")
             _drop_port()  # force a reconnect attempt on the next command
