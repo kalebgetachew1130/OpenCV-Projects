@@ -5,8 +5,8 @@ __pycache__/
 *.pyc
 .vscode/
 .micropico
-gesture_control_system/pc/_framing_check.py
-gesture_control_system/pc/gesture_tracker_hand_info.log
-gesture_control_system/pc/command_queue_info.log
-gesture_control_system/pc/ack_protocol_reader_info.log
-gesture_control_system/pc/ack_protocol_writer_info.log
+gesture_control_system/_framing_check.py
+gesture_control_system/gesture_tracker_hand_info.log
+gesture_control_system/command_queue_info.log
+gesture_control_system/ack_protocol_reader_info.log
+gesture_control_system/ack_protocol_writer_info.log
