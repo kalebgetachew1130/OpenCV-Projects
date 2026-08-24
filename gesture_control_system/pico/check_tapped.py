@@ -1,4 +1,5 @@
 from sensor import motion
+from output import buffer_log
 
 # Configure tap detection once when the module is imported
 motion.set_tap(1, threshold=30)
@@ -6,11 +7,12 @@ motion.set_tap(1, threshold=30)
 # @param threshold: force needed to register a tap (in newtons)
 
 
-def print_tapped():
+def print_tapped(cmd = None, command_id = None):
     # Check the tap flag once, print the result, and return it
+    tag = f"[{cmd}|{command_id}] " if cmd and command_id else ""
     if motion.tapped:
-        print("tapped")
+        buffer_log(f"{tag}tapped")
         return True
 
-    print("not tapped")
+    buffer_log(f"{tag}not tapped")
     return False

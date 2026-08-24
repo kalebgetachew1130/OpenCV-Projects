@@ -4,6 +4,8 @@ import check_angle as cang
 import check_shake as cshk
 import check_tapped as ctap
 
+from output import queue_print, drain_now, buffer_log, merge_debug_buffer, drain_debug_buffer
+
 actions = {
     "<O>": cacc.print_acceleration, # Open palm
     "<C>": cang.print_angle, # Closed fist
@@ -25,26 +27,46 @@ NAK_PREFIX = "NAK:"
 FIELD_SEP = "|"  # separates cmd|command_id|timestamp; must match serial_sender
 
 
+DUMP_EVERY_N_COMMANDS = 3
+_commands_since_dump = 0
+
+# TODO: Write back to pc in similar format as recieved, not as plain text
 def _reply(prefix, cmd, command_id, timestamp):
-    sys.stdout.write(
-        prefix + FIELD_SEP.join((cmd, command_id, timestamp)) + "\n"
-    )
+    # sys.stdout.write(
+    #     prefix + FIELD_SEP.join((cmd, command_id, timestamp)) + "\n"
+    # )
+    queue_print(prefix + FIELD_SEP.join((cmd, command_id, timestamp)) + "\n", throttle=False)
 
-
-def handle_command(cmd, command_id, timestamp):
+"""
+_handle_command will drain every ACK/NAK message to the sender immediately, and will also drain the debug buffer every DUMP_EVERY_N_COMMANDS commands. 
+This is to ensure that the sender receives the ACK/NAK messages in a timely manner, and that the debug buffer does not grow too large.
+"""
+def _handle_command(cmd, command_id, timestamp):
+    global _commands_since_dump
     action = actions.get(cmd)
     if action is None:
         _reply(NAK_PREFIX, cmd, command_id, timestamp)
+        drain_now()  # flush the output queue to the sender immediately
         return
     try:
-        action()
+        action(cmd, command_id)
     except Exception as e:
         # Report the failure instead of dying — one bad sensor read shouldn't
         # take the receiver loop down, and the sender needs a reply either way.
-        print("Action for {} failed: {}".format(cmd, e))
+        queue_print(f"Action for {cmd} failed: {e}\n", throttle=False)
         _reply(NAK_PREFIX, cmd, command_id, timestamp)
+        drain_now()
         return
     _reply(ACK_PREFIX, cmd, command_id, timestamp)
+
+    _commands_since_dump += 1
+    if _commands_since_dump >= DUMP_EVERY_N_COMMANDS:
+        # merge_debug_buffer()
+        # drain_now()
+        drain_debug_buffer()
+        _commands_since_dump = 0
+
+    drain_now()  # flush remaining ACK messages and debug to the sender immediately
 
 print("Receiver is ready. Waiting for commands...")
 
@@ -55,4 +77,4 @@ while True:
     # A command is followed by its command_id and send timestamp, one per line.
     command_id = sys.stdin.readline().strip()
     timestamp = sys.stdin.readline().strip()
-    handle_command(cmd, command_id, timestamp)
+    _handle_command(cmd, command_id, timestamp)

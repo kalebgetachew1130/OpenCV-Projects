@@ -3,6 +3,8 @@ import time
 import queue
 import threading
 import uuid
+import logging
+import re
 
 GESTURE_TO_COMMAND = {
     "Open_Palm": "<O>",
@@ -27,9 +29,59 @@ _last_command_sent = None
 _last_send_time = 0.0
 _last_warning_time = 0.0  # Track the last time a warning was printed
 
+#   tag = f"[{cmd}|{command_id}] "
+TAG = re.compile(r"\[(?P<cmd>[^|]+)\|(?P<command_id>[^\]]+)\]\s*(?P<data>.*)$")
+
 # While a gesture is held, re-send it this often (seconds) so holding produces
 # steady output without flooding the Pico on every frame.
 REPEAT_INTERVAL = 0.33
+
+# Regular expression for the tag of the result of our check module calls. This is used to extract the command and command_id from the log messages. 
+
+logger = logging.getLogger(__name__)
+
+_command_queued_logger = logging.getLogger(f"{logger}.command_queue") # Logs commands queued for sending to the Pico
+_ACK_protocol_reader_logger = logging.getLogger(f"{logger}.ack_protocol") # Logs ACK/NAK messages received from the Pico that reach the PC side
+_ACK_protocol_writer_logger = logging.getLogger(f"{logger}.ack_protocol_reciever") # Logs ACK/NAK messages received on the Pico side that are sent back to the PC
+_output_logger = logging.getLogger(f"{logger}.output") # Logs output from the Pico's check modules
+
+# Capture INFO level logs and above for both loggers
+_command_queued_logger.setLevel(logging.INFO) 
+_ACK_protocol_reader_logger.setLevel(logging.INFO) 
+_ACK_protocol_writer_logger.setLevel(logging.INFO)
+_output_logger.setLevel(logging.INFO)
+
+ # Open the log file in write mode to overwrite previous logs each time the script runs
+_command_queue_file_handler = logging.FileHandler(
+    "command_queue_info.log",
+    mode = 'w')
+
+_ACK_protocol_reader_file_handler = logging.FileHandler(
+    "ack_protocol_reader_info.log",
+    mode = 'w') 
+
+_ACK_protocol__writer_file_handler = logging.FileHandler(
+    "ack_protocol_writer_info.log",
+    mode = 'w'
+)
+
+_output_logger_file_handler = logging.FileHandler(
+    "output_info.log",
+    mode = 'w'
+)
+
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+_command_queue_file_handler.setFormatter(formatter)
+_ACK_protocol_reader_file_handler.setFormatter(formatter)
+_ACK_protocol__writer_file_handler.setFormatter(formatter)
+_output_logger_file_handler.setFormatter(formatter)
+
+# Set the handlers for each logger instance
+_command_queued_logger.addHandler(_command_queue_file_handler)
+_ACK_protocol_reader_logger.addHandler(_ACK_protocol_reader_file_handler)
+_ACK_protocol_writer_logger.addHandler(_ACK_protocol__writer_file_handler)
+_output_logger.addHandler(_output_logger_file_handler)
 
 # ACK (acknowledgement) protocol — telemetry only.
 # Every command is sent as a 3-line payload (command, command_id, send
@@ -123,13 +175,14 @@ def _coalesce_latest(first):
     return (None, True) if shutdown else (command, False)
 
 
-def _serial_reader():
+def _serial_reader(): # reads response from the serial port in a background thread
     """Background reader: continuously drains the Pico's replies and logs
     ACK/NAK. Sends are fire-and-forget, so the ACK is pure telemetry here; this
     thread never blocks the writer. A NAK (command rejected) is surfaced as a
     warning; plain sensor debug lines from the Pico are ignored. Draining also
     keeps the OS input buffer from filling up with the Pico's chatter.
     """
+    buffer = ""
     while not _shutdown.is_set():
         with _serial_lock:
             ser = _ser
@@ -137,28 +190,47 @@ def _serial_reader():
             time.sleep(0.1)  # writer hasn't opened the port yet
             continue
         try:
-            line = ser.readline().decode(errors="replace").strip()
+            # line = ser.readline().decode(errors="replace").strip()
+            chunk = ser.read(ser.in_waiting or 1).decode(errors="replace")  # read all available bytes, or block for 1 byte
         except serial.SerialException:
             time.sleep(0.1)  # port died; the writer will reopen it
             continue
-        if not line: # line is empty, which means a read timeout occurred
+        if not chunk: # line is empty, which means a read timeout occurred
             continue  # read timeout — loop so we notice shutdown/reconnect
-        recv_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        if line.startswith(ACK_PREFIX):
-            cmd, command_id, sent_time = _parse_ack(line, ACK_PREFIX)
-            print(
-                f"ACK '{cmd}' id={command_id}; sent={sent_time}; recv={recv_time}"
-            )
-        elif line.startswith(NAK_PREFIX):
-            cmd, command_id, sent_time = _parse_ack(line, NAK_PREFIX)
-            print(
-                f"NAK '{cmd}' rejected by Pico; id={command_id}; "
-                f"sent={sent_time}; recv={recv_time}"
-            )
-        # Anything else is sensor debug output; ignore it.
+        buffer += chunk
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            line = line.strip()
+            if not line:
+                continue
+            recv_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            if line.startswith(ACK_PREFIX):
+                cmd, command_id, sent_time = _parse_ack(line, ACK_PREFIX)
+                print("Debug 0")
+                _ACK_protocol_reader_logger.info(
+                    "Message Summary: %s", f"ACK '{cmd}' id={command_id}; sent={sent_time}; recv={recv_time}"
+                )
+
+            elif line.startswith(NAK_PREFIX):
+                cmd, command_id, sent_time = _parse_ack(line, NAK_PREFIX)
+                print("Debug 1")
+                _ACK_protocol_reader_logger.info(
+                    "Message Summary: %s", f"NAK '{cmd}' rejected by Pico; id={command_id}; sent={sent_time}; recv={recv_time}"
+                )
+            else:
+                has_match = TAG.match(line)
+                if has_match:
+                    cmd = has_match.group("cmd")
+                    command_id = has_match.group("command_id")
+                    data = has_match.group("data")
+                    _output_logger.info("Message Summary: %s", f"Successful Read: [{cmd}|{command_id}] {data}")
+                else:
+                    _output_logger.error("Message Summary: %s", f"Unsuccessful Read: {line}")
 
 
-def _serial_writer():
+
+
+def _serial_writer(): # writes to the serial port in a background thread
     """Owns the serial port and writes commands. Never blocks on the ACK
     replies are handled asynchronously by _serial_reader, so a slow or lost ACK
     can't stall fresh gestures. The port is opened once (lazily, on startup) so
@@ -169,7 +241,10 @@ def _serial_writer():
     try:
         _ensure_open()
     except serial.SerialException as e:
-        print(f"Error opening serial port: {e}")  # retry on the first command
+        # print(f"Error opening serial port: {e}")  # retry on the first command
+        _ACK_protocol_writer_logger.error(
+            "Message Summary: %s", f"Error opening serial port: {e}"
+        )
 
     while True:
         first = _command_queue.get()  # blocks until a command is queued
@@ -191,8 +266,15 @@ def _serial_writer():
             ser.write(
                 f"{command}\n{command_uuid}\n{command_send_time_stamp}\n".encode()
             )
+            _ACK_protocol_writer_logger.info(
+                "Message Summary: %s", f"Sent command '{command}' with id={command_uuid} at {command_send_time_stamp}"
+            )
+            
         except serial.SerialException as e:
-            print(f"Error sending command '{command}': {e}")
+            # print(f"Error sending command '{command}': {e}")
+            _ACK_protocol_writer_logger.error(
+                "Message Summary: %s", f"Error sending command '{command}': {e}"
+            )
             _drop_port()  # force a reconnect attempt on the next command
 
     _shutdown.set()  # stop the reader thread
@@ -210,7 +292,7 @@ _reader_thread = threading.Thread(target=_serial_reader, daemon=True)
 _reader_thread.start()
 
 
-def send_command(gesture_name, confidence_score):
+def send_command(hand_side, gesture_name, confidence_score):
     """Queue a command for the background worker. Non-blocking — safe to call
     from the video loop every frame."""
     global _last_command_sent, _last_send_time, _last_warning_time
@@ -223,7 +305,6 @@ def send_command(gesture_name, confidence_score):
     if command is None:
         # 1 sec buffer
         if (now - _last_warning_time) > 1.0:
-            print(f"No command mapped for gesture '{gesture_name}'.")
             _last_warning_time = now
         return
 
@@ -236,6 +317,8 @@ def send_command(gesture_name, confidence_score):
     _last_command_sent = command
     _last_send_time = now
 
+    # NOTE: Log here for command queueing, not in the worker thread, so the log reflects the actual frame that queued the command, not when it was sent.
+    _command_queued_logger.info("Queue Sent: %s",f"Command Queued'{command}' for gesture '{gesture_name}' with confidence {confidence_score:.2f} on hand '{hand_side}'.")
     _command_queue.put(command)
 
 
